@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,8 +30,17 @@ import urllib.request
 # ---------------------------------------------------------------------------
 
 HAIKU_MODEL = "claude-haiku-4-5"
-API_URL = "https://api.anthropic.com/v1/messages"
-API_VERSION = "2023-06-01"
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_VERSION = "2023-06-01"
+VERTEX_API_VERSION = "vertex-2023-10-16"
+
+# Vertex AI endpoint template. Region and project are
+# filled at runtime from environment variables or gcloud.
+VERTEX_URL_TEMPLATE = (
+    "https://{region}-aiplatform.googleapis.com/v1/"
+    "projects/{project}/locations/{region}/"
+    "publishers/anthropic/models/{model}:rawPredict"
+)
 
 # Per-million-token pricing
 PRICING = {
@@ -186,21 +196,151 @@ def save_state(path, state):
 # ---------------------------------------------------------------------------
 
 
-def call_haiku(api_key, prompt_text, config):
-    """Call the Haiku API to classify prompt complexity.
+def get_vertex_access_token():
+    """Obtain a GCP access token via gcloud CLI.
+
+    Returns:
+        str: Bearer token for Vertex AI requests.
+
+    Raises:
+        RuntimeError: If gcloud is not installed or fails.
+    """
+    try:
+        result = subprocess.run(
+            ["gcloud", "auth", "print-access-token"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"gcloud auth failed: {result.stderr.strip()}"
+            )
+        return result.stdout.strip()
+    except FileNotFoundError:
+        raise RuntimeError(
+            "gcloud CLI not found. Install the Google Cloud "
+            "SDK or set ANTHROPIC_API_KEY for direct API "
+            "access."
+        )
+
+
+def get_vertex_config():
+    """Resolve Vertex AI project and region from environment
+    or gcloud config.
+
+    Checks environment variables first, then falls back to
+    gcloud config values.
+
+    Returns:
+        tuple: (project_id, region) strings.
+
+    Raises:
+        RuntimeError: If project or region cannot be resolved.
+    """
+    project = os.environ.get(
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        os.environ.get(
+            "GOOGLE_CLOUD_PROJECT",
+            os.environ.get("CLOUDSDK_CORE_PROJECT", ""),
+        ),
+    )
+    region = os.environ.get(
+        "CLOUD_ML_REGION",
+        os.environ.get("GOOGLE_CLOUD_REGION", ""),
+    )
+
+    # Fall back to gcloud config if env vars are not set
+    if not project:
+        try:
+            result = subprocess.run(
+                ["gcloud", "config", "get-value", "project"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            project = result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    if not region:
+        try:
+            result = subprocess.run(
+                [
+                    "gcloud", "config", "get-value",
+                    "compute/region",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            region = result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    if not project:
+        raise RuntimeError(
+            "GCP project not found. Set "
+            "ANTHROPIC_VERTEX_PROJECT_ID, "
+            "GOOGLE_CLOUD_PROJECT, or configure gcloud."
+        )
+    if not region:
+        raise RuntimeError(
+            "GCP region not found. Set CLOUD_ML_REGION, "
+            "GOOGLE_CLOUD_REGION, or configure gcloud "
+            "compute/region."
+        )
+    return project, region
+
+
+def resolve_api_backend():
+    """Determine which API backend to use for Haiku calls.
+
+    Checks for ANTHROPIC_API_KEY first (direct API), then
+    falls back to Vertex AI credentials.
+
+    Returns:
+        tuple: (backend, credentials) where backend is
+               "anthropic" or "vertex", and credentials is
+               the API key string or a dict with project,
+               region, and access_token.
+
+    Raises:
+        RuntimeError: If no usable credentials are found.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if api_key:
+        return "anthropic", api_key
+
+    # Try Vertex AI
+    try:
+        project, region = get_vertex_config()
+        token = get_vertex_access_token()
+        return "vertex", {
+            "project": project,
+            "region": region,
+            "access_token": token,
+        }
+    except RuntimeError:
+        pass
+
+    raise RuntimeError(
+        "No API credentials found. Set ANTHROPIC_API_KEY "
+        "for direct access, or configure gcloud for "
+        "Vertex AI."
+    )
+
+
+def call_haiku_anthropic(api_key, prompt_text, config):
+    """Call Haiku via the direct Anthropic API.
 
     Args:
         api_key: Anthropic API key string.
         prompt_text: The user's prompt, already truncated.
-        config: Configuration dict with api_timeout_seconds
-                and haiku_max_tokens.
+        config: Configuration dict.
 
     Returns:
-        tuple: (tier, reason, input_tokens, output_tokens) on
-               success.
-
-    Raises:
-        Exception: On any API or network failure.
+        tuple: (tier, reason, input_tokens, output_tokens).
     """
     classification_input = CLASSIFICATION_PROMPT.format(
         prompt=prompt_text
@@ -215,35 +355,126 @@ def call_haiku(api_key, prompt_text, config):
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        API_URL,
+        ANTHROPIC_API_URL,
         data=request_body,
         headers={
             "Content-Type": "application/json",
             "x-api-key": api_key,
-            "anthropic-version": API_VERSION,
+            "anthropic-version": ANTHROPIC_API_VERSION,
         },
         method="POST",
     )
 
     timeout = config["api_timeout_seconds"]
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        response_data = json.loads(resp.read().decode("utf-8"))
+        response_data = json.loads(
+            resp.read().decode("utf-8")
+        )
 
-    # Extract usage
+    return _parse_haiku_response(response_data)
+
+
+def call_haiku_vertex(creds, prompt_text, config):
+    """Call Haiku via Google Vertex AI rawPredict.
+
+    The Vertex AI endpoint uses Bearer token auth and a
+    slightly different request body format: model is in the
+    URL path (not the body), and anthropic_version goes in
+    the body instead of a header.
+
+    Args:
+        creds: Dict with project, region, and access_token.
+        prompt_text: The user's prompt, already truncated.
+        config: Configuration dict.
+
+    Returns:
+        tuple: (tier, reason, input_tokens, output_tokens).
+    """
+    classification_input = CLASSIFICATION_PROMPT.format(
+        prompt=prompt_text
+    )
+
+    url = VERTEX_URL_TEMPLATE.format(
+        region=creds["region"],
+        project=creds["project"],
+        model=HAIKU_MODEL,
+    )
+
+    # Vertex rawPredict body: no model field, uses
+    # anthropic_version instead of the header
+    request_body = json.dumps({
+        "anthropic_version": VERTEX_API_VERSION,
+        "max_tokens": config["haiku_max_tokens"],
+        "messages": [
+            {"role": "user", "content": classification_input}
+        ],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=request_body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": (
+                f"Bearer {creds['access_token']}"
+            ),
+        },
+        method="POST",
+    )
+
+    timeout = config["api_timeout_seconds"]
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        response_data = json.loads(
+            resp.read().decode("utf-8")
+        )
+
+    return _parse_haiku_response(response_data)
+
+
+def call_haiku(backend, creds, prompt_text, config):
+    """Call Haiku to classify prompt complexity.
+
+    Dispatches to the appropriate backend (direct Anthropic
+    API or Vertex AI) based on the resolved credentials.
+
+    Args:
+        backend: "anthropic" or "vertex".
+        creds: API key string (anthropic) or dict with
+               project, region, access_token (vertex).
+        prompt_text: The user's prompt, already truncated.
+        config: Configuration dict.
+
+    Returns:
+        tuple: (tier, reason, input_tokens, output_tokens).
+    """
+    if backend == "vertex":
+        return call_haiku_vertex(creds, prompt_text, config)
+    return call_haiku_anthropic(creds, prompt_text, config)
+
+
+def _parse_haiku_response(response_data):
+    """Extract classification from a Haiku API response.
+
+    Works for both direct Anthropic and Vertex AI responses
+    since the response format is identical.
+
+    Args:
+        response_data: Parsed JSON response dict.
+
+    Returns:
+        tuple: (tier, reason, input_tokens, output_tokens).
+    """
     usage = response_data.get("usage", {})
     input_tokens = usage.get("input_tokens", 0)
     output_tokens = usage.get("output_tokens", 0)
 
-    # Extract classification text from response
     content_blocks = response_data.get("content", [])
     response_text = ""
     for block in content_blocks:
         if block.get("type") == "text":
             response_text += block.get("text", "")
 
-    # Parse the JSON classification
     tier, reason = parse_classification(response_text)
-
     return tier, reason, input_tokens, output_tokens
 
 
@@ -518,13 +749,12 @@ def main():
     session_id = hook_input.get("session_id", "unknown")
     user_prompt = hook_input.get("user_prompt", "")
 
-    # Check for API key
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    # Resolve API credentials (direct Anthropic or Vertex AI)
+    try:
+        backend, creds = resolve_api_backend()
+    except RuntimeError as exc:
         output_message(
-            f"{OUTPUT_PREFIX} API key not found. "
-            f"Set ANTHROPIC_API_KEY to enable prompt "
-            f"classification."
+            f"{OUTPUT_PREFIX} {exc}"
         )
         return
 
@@ -547,7 +777,7 @@ def main():
     # Call Haiku for classification
     try:
         tier, reason, in_tok, out_tok = call_haiku(
-            api_key, truncated, config
+            backend, creds, truncated, config
         )
     except urllib.error.URLError as exc:
         output_message(format_error(f"network error: {exc.reason}"))

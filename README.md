@@ -51,8 +51,12 @@ matter — the hook locates the script dynamically under
 
 - **Claude Code** with skill frontmatter hooks support
 - **Python 3.8+** (used by the hook script, stdlib only)
-- **`ANTHROPIC_API_KEY`** environment variable set with a valid
-  Anthropic API key (the hook calls Haiku for classification)
+- **API credentials** — one of the following:
+  - **`ANTHROPIC_API_KEY`** environment variable (direct API)
+  - **Google Cloud / Vertex AI** — `gcloud` CLI authenticated,
+    plus `CLOUD_ML_REGION` (or `GOOGLE_CLOUD_REGION`) and
+    `GOOGLE_CLOUD_PROJECT` (or `ANTHROPIC_VERTEX_PROJECT_ID`)
+    set, or configured via `gcloud config`
 
 ## Usage
 
