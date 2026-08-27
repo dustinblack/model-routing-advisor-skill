@@ -1,0 +1,7 @@
+{
+  "monotonic_threshold": 10,
+  "min_prompts_before_deactivation": 5,
+  "max_prompt_chars": 500,
+  "api_timeout_seconds": 10,
+  "haiku_max_tokens": 150
+}
