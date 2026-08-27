@@ -11,7 +11,7 @@ hooks:
   UserPromptSubmit:
     - hooks:
         - type: command
-          command: "python3 ${CLAUDE_SKILL_DIR}/scripts/classify_prompt.py"
+          command: "python3 ~/.claude/skills/router/scripts/classify_prompt.py"
           timeout: 15
 allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*)
 ---
