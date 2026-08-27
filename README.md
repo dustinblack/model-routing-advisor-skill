@@ -9,7 +9,7 @@ overhead to stay honest about its value.
 ## How It Works
 
 1. You activate the skill once per session with
-   `/model-routing-advisor`.
+   `/router`.
 2. A `UserPromptSubmit` hook registers and fires on every
    subsequent prompt.
 3. The hook calls Haiku (~$0.0003 per classification) to
@@ -39,7 +39,7 @@ Clone this repository into your Claude Code skills directory:
 
 ```bash
 cd ~/.claude/skills/
-git clone https://github.com/dustinblack/model-routing-skill.git model-routing-advisor
+git clone https://github.com/dustinblack/model-routing-skill.git router
 ```
 
 That's it. No dependencies to install — the hook script uses only
@@ -59,7 +59,7 @@ the Python 3.8+ standard library.
 In any Claude Code session:
 
 ```
-/model-routing-advisor
+/router
 ```
 
 This registers the hook. From this point on, every prompt you
@@ -135,4 +135,4 @@ See `references/cost-model.md` for detailed pricing data.
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE) for details.

@@ -1,5 +1,5 @@
 ---
-name: model-routing-advisor
+name: router
 description: >
   Classifies prompt complexity and advises when a different Claude
   model tier would be more cost-effective. Invoke to activate
