@@ -664,7 +664,10 @@ def format_recommendation(tier, reason, state):
     count = state["prompt_count"]
     return (
         f"{OUTPUT_PREFIX} Recommended: {tier} "
-        f"({reason}) | Session: {count} classified, "
+        f"({reason}). If your model tier differs from "
+        f"the recommendation, mention this mismatch in "
+        f"one sentence at the start of your response. "
+        f"| Session: {count} classified, "
         f"router cost: ${cost:.4f}, "
         f"est. savings: ${savings:.4f}"
     )
