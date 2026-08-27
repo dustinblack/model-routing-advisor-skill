@@ -43,14 +43,9 @@ git clone https://github.com/dustinblack/model-routing-skill.git router
 ```
 
 That's it. No dependencies to install — the hook script uses only
-the Python 3.8+ standard library.
-
-**Important:** The skill must be cloned as `router` at
-`~/.claude/skills/router/`. The hook command references this
-path directly because `${CLAUDE_SKILL_DIR}` substitution is not
-supported in hook command fields (only in skill body content and
-`allowed-tools`). If you install to a different path, update the
-`command` in the `hooks` section of `SKILL.md`.
+the Python 3.8+ standard library. The directory name doesn't
+matter — the hook locates the script dynamically under
+`~/.claude/skills/`.
 
 ## Prerequisites
 

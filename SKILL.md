@@ -11,7 +11,7 @@ hooks:
   UserPromptSubmit:
     - hooks:
         - type: command
-          command: "python3 ~/.claude/skills/router/scripts/classify_prompt.py"
+          command: "bash -c 'S=$(find ~/.claude/skills -name classify_prompt.py 2>/dev/null | grep /scripts/ | head -1); [ -f \"$S\" ] && exec python3 \"$S\"'"
           timeout: 15
 allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*)
 ---
